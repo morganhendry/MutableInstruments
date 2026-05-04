@@ -34,6 +34,7 @@
 #include "stmlib/system/storage.h"
 #endif  // TEST
 
+#include "frames/preset_keyframes.h"
 #include "frames/resources.h"
 
 namespace frames {
@@ -56,6 +57,44 @@ const uint8_t Keyframer::palette_[kNumPaletteEntries][3] = {
 stmlib::Storage<0x8020000, 4> storage;
 #endif  // TEST
 
+namespace {
+
+void LoadDefaultKeyframes(Keyframe* keyframes,
+                          uint16_t* num_keyframes,
+                          uint16_t* id_counter) {
+  if (kPresetNumKeyframes == 0) {
+    *num_keyframes = 0;
+    *id_counter = 0;
+    return;
+  }
+
+  const uint16_t count = std::min<uint16_t>(kPresetNumKeyframes,
+                                            kMaxNumKeyframe);
+  for (uint16_t i = 0; i < count; ++i) {
+    keyframes[i] = kPresetKeyframes[i];
+  }
+
+  // Ensure the preset is sorted by timestamp to match runtime expectations.
+  std::sort(&keyframes[0], &keyframes[count], KeyframeLess());
+
+  // Ensure IDs are valid and sequential for color palette behavior.
+  for (uint16_t i = 0; i < count; ++i) {
+    keyframes[i].id = i;
+  }
+
+  // Clear the rest of the buffer.
+  Keyframe empty;
+  empty.timestamp = 0;
+  empty.id = 0;
+  std::fill(&empty.values[0], &empty.values[kNumChannels], 0);
+  std::fill(&keyframes[count], &keyframes[kMaxNumKeyframe], empty);
+
+  *num_keyframes = count;
+  *id_counter = count;
+}
+
+}  // namespace
+
 void Keyframer::Init() {
 #ifndef TEST
   if (!storage.ParsimoniousLoad(keyframes_, SETTINGS_SIZE, &version_token_)) {
@@ -66,6 +105,7 @@ void Keyframer::Init() {
     extra_settings_ = 0;
     dc_offset_frame_modulation_ = 32767;
     Clear();
+    LoadPreset(true);
   }
 #endif  // TEST
 }
@@ -92,6 +132,14 @@ void Keyframer::Clear() {
   fill(&keyframes_[0], &keyframes_[kMaxNumKeyframe], empty);
   num_keyframes_ = 0;
   id_counter_ = 0;
+}
+
+void Keyframer::LoadPreset(bool save_to_flash) {
+  LoadDefaultKeyframes(keyframes_, &num_keyframes_, &id_counter_);
+  if (save_to_flash && num_keyframes_ > 0) {
+    // Persist the preset to flash so it becomes the new factory state.
+    Save(extra_settings_);
+  }
 }
 
 uint16_t Keyframer::FindKeyframe(uint16_t timestamp) {

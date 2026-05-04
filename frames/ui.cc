@@ -62,11 +62,15 @@ void Ui::Init(Keyframer* keyframer, PolyLfo* poly_lfo) {
   
   FindNearestKeyframe();
   active_keyframe_lock_ = false;
+  add_held_during_delete_ = false;
+  preset_restore_confirmation_ = false;
+  ignore_delete_until_release_ = false;
   
   uint32_t ui_flags = keyframer_->extra_settings();
   poly_lfo_mode_ = ui_flags & 1;
   sequencer_mode_= ui_flags & 2;
   secret_handshake_counter_ = 0;
+
 }
 
 void Ui::TryCalibration() {
@@ -78,12 +82,28 @@ void Ui::TryCalibration() {
 
 void Ui::Poll() {
   switches_.Debounce();
+
+  // Track whether ADD is held at any point during a DELETE press.
+  if (!ignore_delete_until_release_ &&
+      switches_.pressed(SWITCH_DELETE_FRAME) &&
+      switches_.pressed(SWITCH_ADD_FRAME)) {
+    add_held_during_delete_ = true;
+  }
   
   for (uint8_t i = 0; i < kNumSwitches; ++i) {
+    if (i == SWITCH_DELETE_FRAME && ignore_delete_until_release_) {
+      if (switches_.released(i)) {
+        ignore_delete_until_release_ = false;
+      }
+      continue;
+    }
     if (switches_.just_pressed(i)) {
       queue_.AddEvent(CONTROL_SWITCH, i, 0);
       press_time_[i] = system_clock.milliseconds();
       detect_very_long_press_[i] = false;
+      if (i == SWITCH_DELETE_FRAME) {
+        add_held_during_delete_ = switches_.pressed(SWITCH_ADD_FRAME);
+      }
     }
     if (switches_.pressed(i)) {
       int32_t pressed_time = system_clock.milliseconds() - press_time_[i];
@@ -141,7 +161,11 @@ void Ui::Poll() {
       channel_leds_.set_channel(1, (animation_counter_ + 16384) >> 8);
       channel_leds_.set_channel(2, (animation_counter_ + 32768) >> 8);
       channel_leds_.set_channel(3, (animation_counter_ + 49152) >> 8);
-      rgb_led_.set_color(0, 255, 0);
+      if (preset_restore_confirmation_) {
+        rgb_led_.set_color(255, 0, 255);
+      } else {
+        rgb_led_.set_color(0, 255, 0);
+      }
       break;
 
     case UI_MODE_ERASE_CONFIRMATION:
@@ -266,6 +290,7 @@ void Ui::OnSwitchReleased(const Event& e) {
           ui_flags |= poly_lfo_mode_ ? 1 : 0;
           ui_flags |= sequencer_mode_ ? 2 : 0;
           keyframer_->Save(ui_flags);
+          preset_restore_confirmation_ = false;
           mode_ = UI_MODE_SAVE_CONFIRMATION;
         } else if (e.data > kLongPressDuration) {
           if (!poly_lfo_mode_) {
@@ -304,11 +329,28 @@ void Ui::OnSwitchReleased(const Event& e) {
           }
         }
         if (e.data > kVeryLongPressDuration) {
-          keyframer_->Clear();
-          FindNearestKeyframe();
-          SyncWithPots();
-          poly_lfo_mode_ = false;
-          mode_ = UI_MODE_ERASE_CONFIRMATION;
+          if (add_held_during_delete_) {
+            // Very long press on DELETE while holding ADD:
+            // restore the compiled-in preset.
+            keyframer_->Clear();
+            keyframer_->LoadPreset(true);
+            FindNearestKeyframe();
+            SyncWithPots();
+            poly_lfo_mode_ = false;
+            preset_restore_confirmation_ = true;
+            mode_ = UI_MODE_SAVE_CONFIRMATION;
+            ignore_delete_until_release_ = true;
+          } else {
+            // Very long press on DELETE alone: factory reset to empty.
+            keyframer_->Clear();
+            FindNearestKeyframe();
+            SyncWithPots();
+            poly_lfo_mode_ = false;
+            preset_restore_confirmation_ = false;
+            mode_ = UI_MODE_ERASE_CONFIRMATION;
+            ignore_delete_until_release_ = true;
+          }
+          add_held_during_delete_ = false;
         } else if (e.data > kLongPressDuration) {
           if (!poly_lfo_mode_) {
             mode_ = UI_MODE_EDIT_RESPONSE;
@@ -427,6 +469,7 @@ void Ui::DoEvents() {
       mode_ = UI_MODE_NORMAL;
     }
     secret_handshake_counter_ = 0;
+    preset_restore_confirmation_ = false;
   }
 }
 

@@ -127,6 +127,9 @@ class Ui {
   bool poly_lfo_mode_;
   bool sequencer_mode_;
   int8_t secret_handshake_counter_;
+  bool add_held_during_delete_;
+  bool preset_restore_confirmation_;
+  bool ignore_delete_until_release_;
   
   uint16_t animation_counter_;
   uint16_t keyframe_led_pwm_counter_;

@@ -98,6 +98,10 @@ class Keyframer {
   }
   
   void Evaluate(uint16_t timestamp);
+
+  // Load the compiled-in preset keyframes (if any). If save_to_flash is true,
+  // the preset is persisted so it becomes the new factory state.
+  void LoadPreset(bool save_to_flash);
   
   inline ChannelSettings* mutable_settings(uint8_t channel) {
     return &settings_[channel];

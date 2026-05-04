@@ -45,8 +45,11 @@ RESOURCES      = frames/resources
 include stmlib/makefile.inc
 
 # Rule for building the firmware update file
-wav:  $(TARGET_BIN)
-	python stm_audio_bootloader/qpsk/encoder.py \
-		-s 48000 -b 12000 -c 6000 -p 256 \
-		$(TARGET_BIN)
+WAV_TIMESTAMP ?= $(shell date +%Y%m%d_%H%M%S)
+WAV_FILE ?= build/$(TARGET)/$(TARGET)_$(WAV_TIMESTAMP).wav
 
+wav: bin
+	PYTHONPATH=. python3 stm_audio_bootloader/qpsk/encoder.py \
+		-s 48000 -b 12000 -c 6000 -p 256 -o $(WAV_FILE) \
+		$(TARGET_BIN)
+	@echo "WAV generated: $(WAV_FILE)"
