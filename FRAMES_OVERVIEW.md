@@ -11,6 +11,16 @@ This document is a high-level guide to the Frames firmware. It focuses on how th
 3. **Calibration check** is performed via `ui.TryCalibration()`.
 4. **Main loop** begins and runs forever.
 
+### Preset Hook During Boot
+The custom preset behavior is initialized inside `Keyframer::Init()` in
+`frames/keyframer.cc`.
+
+- On boot, Frames first tries to load the saved keyframe/state block from flash.
+- If that flash block is missing or invalid, the firmware copies the compiled
+  preset from `frames/preset_keyframes.cc` into the working keyframe buffer.
+- The preset is then saved back to flash immediately, so subsequent boots use
+  the saved state instead of re-importing the compiled table every time.
+
 ### Main Loop (Runtime)
 The main loop in `frames/frames.cc` does three things repeatedly:
 - **Process UI events** (`ui.DoEvents()`), which reacts to user input.
@@ -41,6 +51,15 @@ Implemented in `frames/keyframer.cc`:
 - If the timestamp is before the first keyframe or after the last, it holds the nearest keyframe.
 - If the timestamp lies between two keyframes, it interpolates using the selected **easing curve**.
 
+### Compiled Preset Table
+The compiled preset lives in `frames/preset_keyframes.cc`.
+
+- `kPresetKeyframes[]` is the source table you edit.
+- `kPresetNumKeyframes` is derived automatically from the array length.
+- During loading, `LoadDefaultKeyframes()` copies that table into
+  `keyframes_`, sorts it by timestamp, and rewrites the IDs so palette colors
+  remain predictable.
+
 ### Output Conversion
 - `ConvertToDacCode()` shapes linear values into a response curve for the 2164 VCA.
 - This uses lookup tables in `frames/resources.cc` and `frames/resources.h`.
@@ -67,7 +86,22 @@ Implemented in `frames/keyframer.cc`:
 - **Very long press ADD**: save to storage.
 - **Short press DELETE**: remove nearest keyframe.
 - **Long press DELETE**: enter response edit.
-- **Very long press DELETE**: clear all keyframes.
+- **Very long press DELETE**: clear the current in-memory keyframes.
+- **Hold ADD, then very long press DELETE**: restore the compiled preset and
+  save it to flash.
+
+### Restore Gesture Details
+The preset restore gesture is implemented in `Ui::OnSwitchReleased()` in
+`frames/ui.cc`.
+
+- The code tracks whether `ADD` was held at any point during the `DELETE`
+  press.
+- If `DELETE` reaches the very-long-press threshold and `ADD` was held, the UI
+  calls `keyframer_->LoadPreset(true)`.
+- That path uses the normal keyframer loading code, then persists the result to
+  flash.
+- The UI then enters `UI_MODE_SAVE_CONFIRMATION`, with a magenta RGB LED to
+  distinguish preset restore from a normal save.
 
 ## Drivers (ADC, DAC, LEDs, Switches, Trigger)
 
@@ -90,8 +124,15 @@ Storage is handled by `frames/keyframer.cc` using `stmlib::Storage`.
 - **Load**: `Keyframer::Init()` reads stored keyframes and settings from flash.
 - **Save**: `Keyframer::Save()` writes the current keyframes/settings to flash.
 - **Erase**: `Keyframer::Clear()` deletes the in-memory set.
+- **Preset restore**: `Keyframer::LoadPreset(true)` loads the compiled table and
+  then saves it to flash.
 
-If storage is empty or invalid, `Keyframer::Init()` defaults to an empty set.
+If storage is empty or invalid, `Keyframer::Init()` no longer defaults to an
+empty set. It imports the compiled preset instead.
+
+One subtle behavior is worth knowing: `Clear()` by itself does not save. A
+plain long-delete erase affects RAM immediately, but the previously saved flash
+state comes back after reboot unless you save again.
 
 ## Where To Start If You Want To Modify Behavior
 
@@ -111,6 +152,11 @@ Here are the most common starting points:
 
 4. **Storage and presets**
    - `frames/keyframer.cc`
-   - Look at `Init()` and `Save()`.
+   - Look at `Init()`, `LoadPreset()`, and `Save()`.
+
+5. **Compiled preset content**
+   - `frames/preset_keyframes.cc`
+   - Edit the timestamps and channel values here when you want a new factory
+     composition.
 
 If you want, I can expand any of these sections with deeper callouts or diagrams.

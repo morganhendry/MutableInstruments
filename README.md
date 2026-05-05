@@ -1,5 +1,10 @@
 Mutable Instruments' Eurorack Modules.
 
+Frames customization notes for this checkout:
+
+* `FRAMES_OVERVIEW.md` - architecture and runtime behavior for Frames.
+* `FRAMES_BUILD_GUIDE.md` - local build, WAV generation, and compiled preset workflow.
+
 * [Blades](http://mutable-instruments.net/modules/blades): Dual multimode filter.
 * [Blinds](http://mutable-instruments.net/modules/blinds): Quad VC-polarizer.
 * [Braids](http://mutable-instruments.net/modules/braids): Macro-oscillator.

@@ -2,12 +2,14 @@
 
 This document explains, step by step, how to set up the environment, modify the Frames firmware, build it, and generate the audio `.wav` file for updating the module. It reflects the exact workflow we used in this repo.
 
-## What We Achieved
+## What This Custom Firmware Does
 
-1. Added a **preset keyframe table** that can be compiled into the firmware.
-2. Modified the firmware so the preset is **saved into flash on first boot**.
-3. Set up the **ARM toolchain** to build the firmware.
-4. Generated the **`.wav` file** for the audio bootloader.
+1. Adds a **compiled-in preset keyframe table** in `frames/preset_keyframes.cc`.
+2. Seeds that preset into flash on **first boot only**, when Frames storage is empty or invalid.
+3. Adds a runtime restore gesture:
+   Hold `ADD`, then hold `DELETE` for about 3 seconds to reload the compiled preset and save it to flash.
+4. Keeps the stock bootloader and calibration startup gestures unchanged:
+   hold `ADD` at power-on for bootloader, hold `DELETE` at power-on for recalibration.
 
 ## Repo Layout (Relevant Parts)
 
@@ -61,10 +63,19 @@ This installs under:
 ```
 
 ### 5. Python Dependency: NumPy
-The audio encoder requires NumPy.
+The audio encoder requires NumPy. On recent macOS/Homebrew setups, the safest
+path is a local virtual environment in the repo:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python3 -m pip install numpy
+```
+
+If you use the virtual environment, activate it before generating WAV files:
+
+```bash
+source .venv/bin/activate
 ```
 
 ## VS Code Setup (Recommended)
@@ -123,13 +134,21 @@ Meaning:
 - `0` = keyframe ID (we overwrite this internally)
 - `{ 10000, 0, 0, 0 }` = 4 channel values
 
-Set:
+Important notes:
+- You do **not** need to manually maintain `kPresetNumKeyframes`. It is derived
+  from the array size automatically.
+- Up to `64` keyframes are supported.
+- The loader sorts keyframes by timestamp before using them, so the table does
+  not have to be perfectly ordered in source, though keeping it sorted is still
+  easier to read.
+- Values are raw Frames channel levels, `0` to `65535`.
+
+The count is defined like this and should usually be left alone:
 
 ```cpp
-const uint16_t kPresetNumKeyframes = 64;
+const uint16_t kPresetNumKeyframes =
+    sizeof(kPresetKeyframes) / sizeof(kPresetKeyframes[0]);
 ```
-
-To enable your full preset table.
 
 ## Step 3: Firmware Seeding On First Boot
 
@@ -140,13 +159,32 @@ We modified `frames/keyframer.cc` so that:
 
 This makes your preset the new “factory” state.
 
+### Runtime Restore Gesture
+
+The custom restore gesture lives in `frames/ui.cc`:
+
+- Hold `ADD`
+- While still holding `ADD`, hold `DELETE`
+- Keep holding `DELETE` for about `3` seconds
+- Release the buttons
+
+That path calls `Keyframer::LoadPreset(true)`, which reloads the compiled preset
+and saves it to flash immediately.
+
+### Important Behavior Note
+
+A very long `DELETE` press **without** `ADD` still clears the current in-memory
+keyframes, but it does **not** save that empty state to flash by itself. After a
+power cycle, the last saved state comes back unless you explicitly save again.
+
 ## Step 4: Build The Firmware And WAV (Recommended)
 
 The easiest path is the `wav` target, which builds the `.bin` **and** produces
 a **time-stamped** `.wav` file.
 
 ```bash
-make -f frames/makefile wav TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/
+make -f frames/makefile wav \
+  TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/
 ```
 
 This prints the WAV path, for example:
@@ -168,8 +206,15 @@ make -f frames/makefile wav \
 If you only want to build the firmware binary without making a WAV:
 
 ```bash
-make -f frames/makefile bin TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/
+make -f frames/makefile bin \
+  TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/
 ```
+
+This generates:
+
+- `build/frames/frames.elf`
+- `build/frames/frames.hex`
+- `build/frames/frames.bin`
 
 ## Step 6: Play The WAV Into Frames
 
@@ -198,12 +243,26 @@ brew install gcc-arm-embedded
 ```
 
 ### “python: No such file or directory”
-Use Python 3 explicitly (the `wav` target already does this):
+Use the `wav` target, which already calls `python3`.
 
-### “No module named numpy”
-Install NumPy:
+### “build/frames/frames.bin: No such file or directory”
+The encoder needs the `.bin` file. Run either:
 
 ```bash
+make -f frames/makefile bin TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/
+```
+
+or just use:
+
+```bash
+make -f frames/makefile wav TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/
+```
+
+### “No module named numpy”
+Activate the virtual environment and install NumPy there:
+
+```bash
+source .venv/bin/activate
 python3 -m pip install numpy
 ```
 
@@ -212,29 +271,29 @@ python3 -m pip install numpy
 - `frames/preset_keyframes.h`
 - `frames/preset_keyframes.cc`
 - `frames/keyframer.cc`
+- `frames/ui.cc`
+- `frames/makefile`
 - `stmlib/linker_scripts/stm32f10x_flash_md_application.ld`
 - `stm_audio_bootloader/qpsk/encoder.py`
 - `stm_audio_bootloader/audio_stream_writer.py`
 
-## Optional Quality Of Life
+## Where The Preset Logic Lives
 
-You can add this to your shell to make the encoder command shorter:
-
-```bash
-export PYTHONPATH=.
-```
-
-Then run:
-
-```bash
-python3 stm_audio_bootloader/qpsk/encoder.py -s 48000 -b 12000 -c 6000 -p 256 build/frames/frames.bin
-```
+- `frames/preset_keyframes.cc`
+  The compiled keyframe table itself.
+- `frames/keyframer.cc`
+  `LoadDefaultKeyframes()` copies the compiled table into the working buffer,
+  sorts by timestamp, resets IDs, and optionally saves to flash through
+  `LoadPreset(true)`.
+- `frames/ui.cc`
+  The `ADD` + very long `DELETE` gesture calls `LoadPreset(true)`.
+- `frames/makefile`
+  The `wav` target now builds `frames.bin` first and emits a time-stamped WAV.
 
 ## Next Steps
 
 If you want:
-- A “hold a button on boot to restore preset” feature
-- Automatic preset validation (sorted timestamps)
-- A helper script to convert CSV presets into C++ tables
+- A CSV-to-keyframe conversion helper
+- A stricter preset validator
 
 Just say the word and we can add it.
