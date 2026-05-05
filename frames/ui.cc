@@ -64,11 +64,16 @@ void Ui::Init(Keyframer* keyframer, PolyLfo* poly_lfo) {
   active_keyframe_lock_ = false;
   add_held_during_delete_ = false;
   preset_restore_confirmation_ = false;
-  ignore_delete_until_release_ = false;
+  fill(&ignore_switch_until_release_[0],
+       &ignore_switch_until_release_[kNumSwitches],
+       false);
   
   uint32_t ui_flags = keyframer_->extra_settings();
-  poly_lfo_mode_ = ui_flags & 1;
-  sequencer_mode_= ui_flags & 2;
+  poly_lfo_mode_ = ui_flags & kExtraSettingPolyLfoMode;
+  sequencer_mode_ = ui_flags & kExtraSettingSequencerMode;
+  selected_preset_slot_ = keyframer_->current_preset_slot();
+  selected_preset_slot_valid_ = keyframer_->IsPresetSlotPopulated(
+      selected_preset_slot_);
   secret_handshake_counter_ = 0;
 
 }
@@ -84,16 +89,16 @@ void Ui::Poll() {
   switches_.Debounce();
 
   // Track whether ADD is held at any point during a DELETE press.
-  if (!ignore_delete_until_release_ &&
+  if (!ignore_switch_until_release_[SWITCH_DELETE_FRAME] &&
       switches_.pressed(SWITCH_DELETE_FRAME) &&
       switches_.pressed(SWITCH_ADD_FRAME)) {
     add_held_during_delete_ = true;
   }
   
   for (uint8_t i = 0; i < kNumSwitches; ++i) {
-    if (i == SWITCH_DELETE_FRAME && ignore_delete_until_release_) {
+    if (ignore_switch_until_release_[i]) {
       if (switches_.released(i)) {
-        ignore_delete_until_release_ = false;
+        ignore_switch_until_release_[i] = false;
       }
       continue;
     }
@@ -175,6 +180,25 @@ void Ui::Poll() {
       channel_leds_.set_channel(2, (animation_counter_ + 32768) >> 8);
       channel_leds_.set_channel(3, (animation_counter_ + 49152) >> 8);
       rgb_led_.set_color(255, 0, 0);
+      break;
+
+    case UI_MODE_PRESET_SELECTION:
+      channel_leds_.set_channel(
+          0, (selected_preset_slot_ & 0x01) ? 255 : 0);
+      channel_leds_.set_channel(
+          1, (selected_preset_slot_ & 0x02) ? 255 : 0);
+      channel_leds_.set_channel(
+          2, (selected_preset_slot_ & 0x04) ? 255 : 0);
+      channel_leds_.set_channel(
+          3, (selected_preset_slot_ & 0x08) ? 255 : 0);
+      rgb_led_.set_color(selected_preset_slot_valid_ ? 0 : 255,
+                         selected_preset_slot_valid_ ? 255 : 0,
+                         0);
+      if (selected_preset_slot_ & 0x10) {
+        keyframe_led_.High();
+      } else {
+        keyframe_led_.Low();
+      }
       break;
 
     case UI_MODE_FACTORY_TESTING:
@@ -277,6 +301,21 @@ void Ui::OnSwitchReleased(const Event& e) {
   if (mode_ == UI_MODE_FACTORY_TESTING) {
     test_led_ = false;
   } else  {
+    if (mode_ == UI_MODE_PRESET_SELECTION) {
+      if (e.control_id == SWITCH_ADD_FRAME) {
+        if (selected_preset_slot_valid_ &&
+            keyframer_->LoadPreset(selected_preset_slot_, true)) {
+          FindNearestKeyframe();
+          poly_lfo_mode_ = false;
+          preset_restore_confirmation_ = true;
+          mode_ = UI_MODE_SAVE_CONFIRMATION;
+        }
+      } else if (e.control_id == SWITCH_DELETE_FRAME) {
+        mode_ = UI_MODE_NORMAL;
+      }
+      return;
+    }
+
     if (active_keyframe_lock_) {
       active_keyframe_lock_ = false;
       FindNearestKeyframe();
@@ -285,10 +324,14 @@ void Ui::OnSwitchReleased(const Event& e) {
     
     switch (e.control_id) {
       case SWITCH_ADD_FRAME:
+        if (switches_.pressed(SWITCH_DELETE_FRAME)) {
+          break;
+        }
         if (e.data > kVeryLongPressDuration) {
-          uint32_t ui_flags = 0;
-          ui_flags |= poly_lfo_mode_ ? 1 : 0;
-          ui_flags |= sequencer_mode_ ? 2 : 0;
+          uint32_t ui_flags = PackExtraSettings(
+              poly_lfo_mode_,
+              sequencer_mode_,
+              keyframer_->current_preset_slot());
           keyframer_->Save(ui_flags);
           preset_restore_confirmation_ = false;
           mode_ = UI_MODE_SAVE_CONFIRMATION;
@@ -330,16 +373,11 @@ void Ui::OnSwitchReleased(const Event& e) {
         }
         if (e.data > kVeryLongPressDuration) {
           if (add_held_during_delete_) {
-            // Very long press on DELETE while holding ADD:
-            // restore the compiled-in preset.
-            keyframer_->Clear();
-            keyframer_->LoadPreset(true);
-            FindNearestKeyframe();
-            SyncWithPots();
-            poly_lfo_mode_ = false;
-            preset_restore_confirmation_ = true;
-            mode_ = UI_MODE_SAVE_CONFIRMATION;
-            ignore_delete_until_release_ = true;
+            EnterPresetSelectionMode();
+            ignore_switch_until_release_[SWITCH_ADD_FRAME] =
+                switches_.pressed(SWITCH_ADD_FRAME);
+            ignore_switch_until_release_[SWITCH_DELETE_FRAME] =
+                switches_.pressed(SWITCH_DELETE_FRAME);
           } else {
             // Very long press on DELETE alone: factory reset to empty.
             keyframer_->Clear();
@@ -348,10 +386,13 @@ void Ui::OnSwitchReleased(const Event& e) {
             poly_lfo_mode_ = false;
             preset_restore_confirmation_ = false;
             mode_ = UI_MODE_ERASE_CONFIRMATION;
-            ignore_delete_until_release_ = true;
+            ignore_switch_until_release_[SWITCH_DELETE_FRAME] = true;
           }
           add_held_during_delete_ = false;
         } else if (e.data > kLongPressDuration) {
+          if (add_held_during_delete_) {
+            break;
+          }
           if (!poly_lfo_mode_) {
             mode_ = UI_MODE_EDIT_RESPONSE;
             active_channel_ = -1;
@@ -423,7 +464,11 @@ void Ui::OnPotChanged(const Event& e) {
         break;
       
       case kFrameAdcChannel:
-        if (!active_keyframe_lock_) {
+        if (mode_ == UI_MODE_PRESET_SELECTION) {
+          selected_preset_slot_ = QuantizePresetSlot(e.data);
+          selected_preset_slot_valid_ = keyframer_->IsPresetSlotPopulated(
+              selected_preset_slot_);
+        } else if (!active_keyframe_lock_) {
           FindNearestKeyframe();
         }
         break;
@@ -438,6 +483,18 @@ void Ui::FindNearestKeyframe() {
   active_keyframe_ = keyframer_->FindNearestKeyframe(
       frame(),
       kKeyframeGridTolerance);
+}
+
+void Ui::EnterPresetSelectionMode() {
+  selected_preset_slot_ = QuantizePresetSlot(adc_filtered_value_[kFrameAdcChannel]);
+  selected_preset_slot_valid_ = keyframer_->IsPresetSlotPopulated(
+      selected_preset_slot_);
+  mode_ = UI_MODE_PRESET_SELECTION;
+}
+
+uint8_t Ui::QuantizePresetSlot(uint16_t value) const {
+  uint8_t slot = value >> 11;
+  return slot < kNumPresetSlots ? slot : kNumPresetSlots - 1;
 }
 
 void Ui::SyncWithPots() {

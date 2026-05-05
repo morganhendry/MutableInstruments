@@ -4,11 +4,13 @@ This document explains, step by step, how to set up the environment, modify the 
 
 ## What This Custom Firmware Does
 
-1. Adds a **compiled-in preset keyframe table** in `frames/preset_keyframes.cc`.
-2. Seeds that preset into flash on **first boot only**, when Frames storage is empty or invalid.
-3. Adds a runtime restore gesture:
-   Hold `ADD`, then hold `DELETE` for about 3 seconds to reload the compiled preset and save it to flash.
-4. Keeps the stock bootloader and calibration startup gestures unchanged:
+1. Adds a **compiled-in 32-slot preset bank** in `frames/preset_keyframes.cc`.
+2. Makes slot `0` a blank 0V preset and uses it on **first boot only**, when Frames storage is empty or invalid.
+3. Adds a runtime preset-loader gesture:
+   Hold `ADD`, then hold `DELETE` for about 3 seconds to enter patch selection.
+4. Uses the 4 channel LEDs plus the keyframe LED as a **5-bit binary display** for slot `0-31`.
+5. Keeps track of the last loaded slot in flash, so startup restores the last saved state from that slot.
+6. Keeps the stock bootloader and calibration startup gestures unchanged:
    hold `ADD` at power-on for bootloader, hold `DELETE` at power-on for recalibration.
 
 ## Repo Layout (Relevant Parts)
@@ -110,20 +112,20 @@ This ensures that:
 - `stmlib/makefile.inc` exists
 - the bootloader encoder scripts are present
 
-## Step 2: Add Preset Keyframes
+## Step 2: Add Preset Bank Slots
 
-We added new preset files:
+We added new preset bank files:
 
 - `frames/preset_keyframes.h`
 - `frames/preset_keyframes.cc`
 
-You can edit your preset in:
+You can edit the compiled slot bank in:
 
 ```
 frames/preset_keyframes.cc
 ```
 
-Example entry:
+Example keyframe entry:
 
 ```cpp
 { 1024, 0, { 10000, 0, 0, 0 } },
@@ -135,46 +137,64 @@ Meaning:
 - `{ 10000, 0, 0, 0 }` = 4 channel values
 
 Important notes:
-- You do **not** need to manually maintain `kPresetNumKeyframes`. It is derived
-  from the array size automatically.
-- Up to `64` keyframes are supported.
-- The loader sorts keyframes by timestamp before using them, so the table does
-  not have to be perfectly ordered in source, though keeping it sorted is still
-  easier to read.
+- There are `32` selectable slots, numbered `0` to `31`.
+- Slot `0` is intentionally a blank preset with 2 zero-valued keyframes, one at
+  timestamp `0` and one at `65535`, so output stays at `0V` across the full
+  FRAME sweep.
+- Slot `1` currently contains the example musical preset that used to be the
+  only compiled preset.
+- Slots `2` through `31` are each declared as separate blank preset arrays, so
+  the file is ready to accept pasted keyframe sequences slot by slot.
+- Each populated slot supports up to `64` keyframes.
+- The loader sorts keyframes by timestamp before using them, so the source array
+  does not have to be perfectly ordered, though keeping it sorted is easier to
+  read.
 - Values are raw Frames channel levels, `0` to `65535`.
 
-The count is defined like this and should usually be left alone:
+Each slot is described in the bank like this:
 
 ```cpp
-const uint16_t kPresetNumKeyframes =
-    sizeof(kPresetKeyframes) / sizeof(kPresetKeyframes[0]);
+const PresetDefinition kPresetBank[kNumPresetSlots] = {
+  { kPresetSlot0Keyframes, sizeof(kPresetSlot0Keyframes) / sizeof(kPresetSlot0Keyframes[0]) },
+  { kPresetSlot1Keyframes, sizeof(kPresetSlot1Keyframes) / sizeof(kPresetSlot1Keyframes[0]) },
+  { kPresetSlot2Keyframes, sizeof(kPresetSlot2Keyframes) / sizeof(kPresetSlot2Keyframes[0]) },
+  // ...
+};
 ```
 
 ## Step 3: Firmware Seeding On First Boot
 
 We modified `frames/keyframer.cc` so that:
 
-- If no saved data exists in flash, the preset table is loaded.
-- If the preset table is non‑empty, it is immediately saved into flash.
+- If no saved data exists in flash, slot `0` is loaded.
+- That blank slot is immediately saved into flash.
 
-This makes your preset the new “factory” state.
+After that, normal startup restores whatever saved state was last written to
+flash, including the last loaded slot number.
 
-### Runtime Restore Gesture
+### Runtime Preset Loader Gesture
 
-The custom restore gesture lives in `frames/ui.cc`:
+The custom loader gesture lives in `frames/ui.cc`:
 
 - Hold `ADD`
 - While still holding `ADD`, hold `DELETE`
 - Keep holding `DELETE` for about `3` seconds
 - Release the buttons
+- Turn the `FRAME` knob to choose slot `0-31`
+- Press `ADD` to load the selected slot
+- Press `DELETE` to cancel with no patch change
 
-That path calls `Keyframer::LoadPreset(true)`, which reloads the compiled preset
-and saves it to flash immediately.
+While selecting, the 4 channel LEDs plus the keyframe LED show the slot number
+as a 5-bit binary value. With the current default bank, every slot is
+populated, so the RGB LED should stay in the valid-slot state.
+
+Confirming a populated slot calls `Keyframer::LoadPreset(slot, true)`, which
+loads that compiled slot and saves it to flash immediately.
 
 ### Important Behavior Note
 
 A very long `DELETE` press **without** `ADD` still clears the current in-memory
-keyframes, but it does **not** save that empty state to flash by itself. After a
+keyframes, but it does **not** save that state to flash by itself. After a
 power cycle, the last saved state comes back unless you explicitly save again.
 
 ## Step 4: Build The Firmware And WAV (Recommended)
@@ -280,13 +300,14 @@ python3 -m pip install numpy
 ## Where The Preset Logic Lives
 
 - `frames/preset_keyframes.cc`
-  The compiled keyframe table itself.
+  The compiled 32-slot preset bank itself.
 - `frames/keyframer.cc`
-  `LoadDefaultKeyframes()` copies the compiled table into the working buffer,
+  `LoadCompiledPreset()` copies one compiled slot into the working buffer,
   sorts by timestamp, resets IDs, and optionally saves to flash through
-  `LoadPreset(true)`.
+  `LoadPreset(slot, true)`.
 - `frames/ui.cc`
-  The `ADD` + very long `DELETE` gesture calls `LoadPreset(true)`.
+  The `ADD` + very long `DELETE` gesture enters slot selection, and `ADD`
+  confirms `LoadPreset(slot, true)`.
 - `frames/makefile`
   The `wav` target now builds `frames.bin` first and emits a time-stamped WAV.
 

@@ -35,8 +35,23 @@ namespace frames {
   
 const uint8_t kNumChannels = 4;
 const uint8_t kMaxNumKeyframe = 64;
+const uint8_t kNumPresetSlots = 32;
 
 const uint8_t kNumPaletteEntries = 8;
+const uint32_t kExtraSettingPolyLfoMode = 1UL << 0;
+const uint32_t kExtraSettingSequencerMode = 1UL << 1;
+const uint32_t kExtraSettingCurrentSlotShift = 2;
+const uint32_t kExtraSettingCurrentSlotMask = 31UL << kExtraSettingCurrentSlotShift;
+
+inline uint32_t PackExtraSettings(
+    bool poly_lfo_mode,
+    bool sequencer_mode,
+    uint8_t current_slot) {
+  return (poly_lfo_mode ? kExtraSettingPolyLfoMode : 0) |
+      (sequencer_mode ? kExtraSettingSequencerMode : 0) |
+      ((static_cast<uint32_t>(current_slot) & 31)
+          << kExtraSettingCurrentSlotShift);
+}
 
 enum EasingCurve {
   EASING_CURVE_STEP,
@@ -99,9 +114,11 @@ class Keyframer {
   
   void Evaluate(uint16_t timestamp);
 
-  // Load the compiled-in preset keyframes (if any). If save_to_flash is true,
-  // the preset is persisted so it becomes the new factory state.
-  void LoadPreset(bool save_to_flash);
+  // Load one compiled-in preset slot. If save_to_flash is true, the preset is
+  // persisted so it becomes the new startup state. Returns false for invalid
+  // or empty slots.
+  bool LoadPreset(uint8_t slot, bool save_to_flash);
+  bool IsPresetSlotPopulated(uint8_t slot) const;
   
   inline ChannelSettings* mutable_settings(uint8_t channel) {
     return &settings_[channel];
@@ -137,12 +154,17 @@ class Keyframer {
   // persistent storage things like sequencer mode on/off and
   // poly lfo mode on/off states.
   inline uint32_t extra_settings() const { return extra_settings_; }
+  inline uint8_t current_preset_slot() const {
+    return (extra_settings_ & kExtraSettingCurrentSlotMask) >>
+        kExtraSettingCurrentSlotShift;
+  }
   inline int32_t dc_offset_frame_modulation() const {
     return dc_offset_frame_modulation_;
   }
   
  private:
   uint16_t FindKeyframe(uint16_t timestamp);
+  void SetCurrentPresetSlot(uint8_t slot);
    
   Keyframe keyframes_[kMaxNumKeyframe];
   ChannelSettings settings_[kNumChannels];

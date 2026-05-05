@@ -59,19 +59,25 @@ stmlib::Storage<0x8020000, 4> storage;
 
 namespace {
 
-void LoadDefaultKeyframes(Keyframe* keyframes,
-                          uint16_t* num_keyframes,
-                          uint16_t* id_counter) {
-  if (kPresetNumKeyframes == 0) {
+void LoadCompiledPreset(const PresetDefinition& preset,
+                        Keyframe* keyframes,
+                        uint16_t* num_keyframes,
+                        uint16_t* id_counter) {
+  if (!preset.keyframes || preset.num_keyframes == 0) {
+    Keyframe empty;
+    empty.timestamp = 0;
+    empty.id = 0;
+    std::fill(&empty.values[0], &empty.values[kNumChannels], 0);
+    std::fill(&keyframes[0], &keyframes[kMaxNumKeyframe], empty);
     *num_keyframes = 0;
     *id_counter = 0;
     return;
   }
 
-  const uint16_t count = std::min<uint16_t>(kPresetNumKeyframes,
+  const uint16_t count = std::min<uint16_t>(preset.num_keyframes,
                                             kMaxNumKeyframe);
   for (uint16_t i = 0; i < count; ++i) {
-    keyframes[i] = kPresetKeyframes[i];
+    keyframes[i] = preset.keyframes[i];
   }
 
   // Ensure the preset is sorted by timestamp to match runtime expectations.
@@ -102,10 +108,10 @@ void Keyframer::Init() {
       settings_[i].easing_curve = EASING_CURVE_LINEAR;
       settings_[i].response = 0;
     }
-    extra_settings_ = 0;
+    extra_settings_ = PackExtraSettings(false, false, 0);
     dc_offset_frame_modulation_ = 32767;
     Clear();
-    LoadPreset(true);
+    LoadPreset(0, true);
   }
 #endif  // TEST
 }
@@ -134,12 +140,27 @@ void Keyframer::Clear() {
   id_counter_ = 0;
 }
 
-void Keyframer::LoadPreset(bool save_to_flash) {
-  LoadDefaultKeyframes(keyframes_, &num_keyframes_, &id_counter_);
-  if (save_to_flash && num_keyframes_ > 0) {
-    // Persist the preset to flash so it becomes the new factory state.
+bool Keyframer::LoadPreset(uint8_t slot, bool save_to_flash) {
+  if (slot >= kNumPresetSlots || !IsPresetSlotPopulated(slot)) {
+    return false;
+  }
+  LoadCompiledPreset(kPresetBank[slot], keyframes_, &num_keyframes_, &id_counter_);
+  SetCurrentPresetSlot(slot);
+  if (save_to_flash) {
     Save(extra_settings_);
   }
+  return true;
+}
+
+bool Keyframer::IsPresetSlotPopulated(uint8_t slot) const {
+  return slot < kNumPresetSlots &&
+      kPresetBank[slot].keyframes &&
+      kPresetBank[slot].num_keyframes;
+}
+
+void Keyframer::SetCurrentPresetSlot(uint8_t slot) {
+  extra_settings_ = (extra_settings_ & ~kExtraSettingCurrentSlotMask) |
+      ((static_cast<uint32_t>(slot) & 31) << kExtraSettingCurrentSlotShift);
 }
 
 uint16_t Keyframer::FindKeyframe(uint16_t timestamp) {

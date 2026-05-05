@@ -16,10 +16,11 @@ The custom preset behavior is initialized inside `Keyframer::Init()` in
 `frames/keyframer.cc`.
 
 - On boot, Frames first tries to load the saved keyframe/state block from flash.
-- If that flash block is missing or invalid, the firmware copies the compiled
-  preset from `frames/preset_keyframes.cc` into the working keyframe buffer.
-- The preset is then saved back to flash immediately, so subsequent boots use
-  the saved state instead of re-importing the compiled table every time.
+- If that flash block is missing or invalid, the firmware loads compiled preset
+  slot `0`, which is a blank 0V patch.
+- That blank state is then saved back to flash immediately.
+- On normal restarts, Frames restores the last saved state and remembers which
+  compiled slot it came from.
 
 ### Main Loop (Runtime)
 The main loop in `frames/frames.cc` does three things repeatedly:
@@ -51,12 +52,17 @@ Implemented in `frames/keyframer.cc`:
 - If the timestamp is before the first keyframe or after the last, it holds the nearest keyframe.
 - If the timestamp lies between two keyframes, it interpolates using the selected **easing curve**.
 
-### Compiled Preset Table
-The compiled preset lives in `frames/preset_keyframes.cc`.
+### Compiled Preset Bank
+The compiled preset bank lives in `frames/preset_keyframes.cc`.
 
-- `kPresetKeyframes[]` is the source table you edit.
-- `kPresetNumKeyframes` is derived automatically from the array length.
-- During loading, `LoadDefaultKeyframes()` copies that table into
+- `kPresetBank[kNumPresetSlots]` maps slots `0-31` to source arrays.
+- Slot `0` is a special blank preset with two zero-valued keyframes so the
+  outputs stay at `0V` across the full FRAME range.
+- Slot `1` currently contains the preset data that used to be the single
+  compiled preset.
+- Slots `2-31` are currently separate blank preset arrays, making the file a
+  slot-by-slot template for pasting in custom keyframe data later.
+- During loading, `LoadCompiledPreset()` copies the selected slot into
   `keyframes_`, sorts it by timestamp, and rewrites the IDs so palette colors
   remain predictable.
 
@@ -87,21 +93,23 @@ The compiled preset lives in `frames/preset_keyframes.cc`.
 - **Short press DELETE**: remove nearest keyframe.
 - **Long press DELETE**: enter response edit.
 - **Very long press DELETE**: clear the current in-memory keyframes.
-- **Hold ADD, then very long press DELETE**: restore the compiled preset and
-  save it to flash.
+- **Hold ADD, then very long press DELETE**: enter preset-slot selection.
 
-### Restore Gesture Details
-The preset restore gesture is implemented in `Ui::OnSwitchReleased()` in
+### Preset Loader Details
+The preset loader gesture is implemented in `Ui::OnSwitchReleased()` in
 `frames/ui.cc`.
 
 - The code tracks whether `ADD` was held at any point during the `DELETE`
   press.
 - If `DELETE` reaches the very-long-press threshold and `ADD` was held, the UI
-  calls `keyframer_->LoadPreset(true)`.
-- That path uses the normal keyframer loading code, then persists the result to
-  flash.
-- The UI then enters `UI_MODE_SAVE_CONFIRMATION`, with a magenta RGB LED to
-  distinguish preset restore from a normal save.
+  enters `UI_MODE_PRESET_SELECTION`.
+- In that mode, the `FRAME` knob is quantized to slots `0-31`.
+- The 4 channel LEDs plus the keyframe LED show the selected slot as a binary
+  5-bit number.
+- Press `ADD` to load the selected populated slot and save it to flash.
+- Press `DELETE` to cancel and return to normal with no patch change.
+- The firmware still supports empty slots, but the current default bank
+  populates every slot.
 
 ## Drivers (ADC, DAC, LEDs, Switches, Trigger)
 
@@ -124,11 +132,11 @@ Storage is handled by `frames/keyframer.cc` using `stmlib::Storage`.
 - **Load**: `Keyframer::Init()` reads stored keyframes and settings from flash.
 - **Save**: `Keyframer::Save()` writes the current keyframes/settings to flash.
 - **Erase**: `Keyframer::Clear()` deletes the in-memory set.
-- **Preset restore**: `Keyframer::LoadPreset(true)` loads the compiled table and
-  then saves it to flash.
+- **Preset load**: `Keyframer::LoadPreset(slot, true)` loads one compiled slot
+  and then saves it to flash.
 
 If storage is empty or invalid, `Keyframer::Init()` no longer defaults to an
-empty set. It imports the compiled preset instead.
+editable empty set. It imports compiled slot `0` instead.
 
 One subtle behavior is worth knowing: `Clear()` by itself does not save. A
 plain long-delete erase affects RAM immediately, but the previously saved flash
@@ -156,7 +164,7 @@ Here are the most common starting points:
 
 5. **Compiled preset content**
    - `frames/preset_keyframes.cc`
-   - Edit the timestamps and channel values here when you want a new factory
-     composition.
+   - Edit the slot arrays and `kPresetBank` entries here when you want new
+     compiled patches.
 
 If you want, I can expand any of these sections with deeper callouts or diagrams.

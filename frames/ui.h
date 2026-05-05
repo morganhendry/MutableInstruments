@@ -55,6 +55,7 @@ enum UiMode {
   UI_MODE_NORMAL,
   UI_MODE_SAVE_CONFIRMATION,  
   UI_MODE_ERASE_CONFIRMATION,  
+  UI_MODE_PRESET_SELECTION,
   UI_MODE_EDIT_RESPONSE,
   UI_MODE_EDIT_EASING,
   UI_MODE_FACTORY_TESTING
@@ -100,6 +101,8 @@ class Ui {
   void SyncWithPots();
   
   void FindNearestKeyframe();
+  void EnterPresetSelectionMode();
+  uint8_t QuantizePresetSlot(uint16_t value) const;
 
   stmlib::EventQueue<32> queue_;
 
@@ -129,7 +132,9 @@ class Ui {
   int8_t secret_handshake_counter_;
   bool add_held_during_delete_;
   bool preset_restore_confirmation_;
-  bool ignore_delete_until_release_;
+  bool ignore_switch_until_release_[kNumSwitches];
+  uint8_t selected_preset_slot_;
+  bool selected_preset_slot_valid_;
   
   uint16_t animation_counter_;
   uint16_t keyframe_led_pwm_counter_;

@@ -1,8 +1,8 @@
 // Copyright 2026
 //
-// Default keyframe preset data for first boot.
+// Default keyframe preset data bank.
 //
-// Replace kPresetKeyframes and kPresetNumKeyframes with your own data.
+// Replace the slot arrays and kPresetBank entries with your own data.
 
 #ifndef FRAMES_PRESET_KEYFRAMES_H_
 #define FRAMES_PRESET_KEYFRAMES_H_
@@ -11,8 +11,12 @@
 
 namespace frames {
 
-extern const Keyframe kPresetKeyframes[];
-extern const uint16_t kPresetNumKeyframes;
+struct PresetDefinition {
+  const Keyframe* keyframes;
+  uint16_t num_keyframes;
+};
+
+extern const PresetDefinition kPresetBank[kNumPresetSlots];
 
 }  // namespace frames
 
